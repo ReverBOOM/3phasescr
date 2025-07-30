@@ -29,7 +29,7 @@
 #pragma config EBTR1 = OFF      // Table Read Protection disabled
 #pragma config EBTRB = OFF      // Boot Block Table Read Protection disabled
 
-#define _XTAL_FREQ 4000000UL  // 4 MHz
+#define _XTAL_FREQ 8000000UL  // 8 MHz (changed from 4 MHz)
 
 // === VARIABLES ===
 volatile unsigned char zcAP = 0, zcAN = 0, zcBP = 0, zcBN = 0, zcCP = 0, zcCN = 0;  // 6 separate zero-crossing flags
@@ -46,7 +46,7 @@ volatile unsigned char pulseActiveBN = 0, pulseActiveCP = 0, pulseActiveCN = 0;
 volatile unsigned int pulseStartAP = 0, pulseStartAN = 0, pulseStartBP = 0;
 volatile unsigned int pulseStartBN = 0, pulseStartCP = 0, pulseStartCN = 0;
 
-#define PULSE_WIDTH_TICKS 250  // 2ms = 250 ticks @ 8us/tick
+#define PULSE_WIDTH_TICKS 500  // 2ms = 500 ticks @ 4us/tick (adjusted for 8MHz)
 
 // === ISR for C18 compiler ===
 #pragma interrupt high_isr
@@ -120,25 +120,25 @@ int readADC(void) {
     ADCON0bits.CHS2 = 0;
     ADCON0bits.CHS3 = 0;
     ADCON0bits.ADON = 1;     // Turn on ADC
-    Delay10TCYx(5);          // Acquisition delay (C18 delay function)
+    Delay10TCYx(10);         // Acquisition delay (doubled for 8MHz)
     ADCON0bits.GO = 1;       // Start conversion
     while (ADCON0bits.GO);   // Wait for completion
     
     // Debug: Test different values
     // Uncomment one line to test different delays:
     // return 0;        // Should give NO delay (immediate firing)
-    // return 256;      // Should give ~2ms delay (1000 ticks)
-    // return 512;      // Should give ~4ms delay (2000 ticks)
-    // return 1023;     // Should give ~8ms delay (4000 ticks)
+    // return 256;      // Should give ~2ms delay (2000 ticks)
+    // return 512;      // Should give ~4ms delay (4000 ticks)
+    // return 1023;     // Should give ~8ms delay (8000 ticks)
     
    return ((int)ADRESH << 8) | ADRESL;
 }
 
-// === MAP ADC TO DELAY (up to 8ms = 1000 ticks @ 8us each) ===
+// === MAP ADC TO DELAY (up to 8ms = 2000 ticks @ 4us each) ===
 int calculateDelayTicks(int adcVal) {
-    // Timer1: 4MHz/4/8 = 125kHz = 8us per tick
-    // Max delay: 8ms = 1000 ticks
-    return (adcVal * 1000) / 1023;  // 0-1000 ticks = 0-8ms delay
+    // Timer1: 8MHz/4/8 = 250kHz = 4us per tick (adjusted for 8MHz)
+    // Max delay: 8ms = 2000 ticks
+    return (adcVal * 2000) / 1023;  // 0-2000 ticks = 0-8ms delay
 }
 
 // === TIMER COMPARISON WITH OVERFLOW HANDLING ===
@@ -283,16 +283,16 @@ void init(void) {
     TRISD = 0x00;           // PORTD output
     LATD = 0;               // Clear PORTD
 
-    // ADC Configuration for C18
+    // ADC Configuration for C18 (adjusted for 8MHz)
     ADCON1 = 0x0E;          // Configure analog inputs (AN0 only)
-    ADCON2 = 0x96;          // Right justified, 4 TAD, FOSC/64
+    ADCON2 = 0xBE;          // Right justified, 20 TAD, FOSC/64 (adjusted for 8MHz)
     ADCON0 = 0x00;          // ADC off initially
     
     // Alternative ADC configuration - try this if above doesn't work:
     // ADCON1 = 0x0F;       // All pins digital except AN0
-    // ADCON2 = 0xBE;       // Right justified, 20 TAD, FOSC/64
+    // ADCON2 = 0x96;       // Right justified, 4 TAD, FOSC/64
 
-    // Timer1: Fosc/4 = 1MHz, prescaler 1:8 = 125kHz = 8us/tick
+    // Timer1: 8MHz/4 = 2MHz, prescaler 1:8 = 250kHz = 4us/tick (adjusted for 8MHz)
     T1CONbits.TMR1CS = 0;   // Internal clock (Fosc/4)
     T1CONbits.T1CKPS0 = 1;  // Prescaler 1:8
     T1CONbits.T1CKPS1 = 1;
