@@ -40,6 +40,9 @@ volatile unsigned int lastTAP = 0, lastTAN = 0, lastTBP = 0, lastTBN = 0, lastTC
 // PORTB previous state for change detection
 volatile unsigned char portb_old = 0;
 
+// RB3 (B-) polling variables
+volatile unsigned char rb3_old = 0;
+
 // Individual pulse control for each SCR (6 separate pulse timers)
 volatile unsigned char pulseActiveAP = 0, pulseActiveAN = 0, pulseActiveBP = 0;
 volatile unsigned char pulseActiveBN = 0, pulseActiveCP = 0, pulseActiveCN = 0;
@@ -75,17 +78,10 @@ void high_isr(void) {
         INTCON3bits.INT2IF = 0;
     }
     
-    // PORTB Change Interrupt for RB3, RB4, RB5
+    // PORTB Change Interrupt for RB4, RB5 only (C+, C-)
     if (INTCONbits.RBIF) {
         unsigned char portb_new = PORTB;
         unsigned char portb_changed = portb_new ^ portb_old;
-        
-        // RB3 (B-) - rising edge detection
-        if ((portb_changed & 0x08) && (portb_new & 0x08)) {
-            if (!activeBN) {
-                zcBN = 1;
-            }
-        }
         
         // RB4 (C+) - rising edge detection  
         if ((portb_changed & 0x10) && (portb_new & 0x10)) {
@@ -226,6 +222,7 @@ void updateSCRPulses(void) {
         if (elapsed >= PULSE_WIDTH_TICKS) {
             LATD &= ~0x01;  // Clear RD0
             pulseActiveAP = 0;
+            activeAP = 0;   // Reset active flag for next zero-crossing
         }
     }
     
@@ -235,6 +232,7 @@ void updateSCRPulses(void) {
         if (elapsed >= PULSE_WIDTH_TICKS) {
             LATD &= ~0x02;  // Clear RD1
             pulseActiveAN = 0;
+            activeAN = 0;   // Reset active flag for next zero-crossing
         }
     }
     
@@ -244,6 +242,7 @@ void updateSCRPulses(void) {
         if (elapsed >= PULSE_WIDTH_TICKS) {
             LATD &= ~0x04;  // Clear RD2
             pulseActiveBP = 0;
+            activeBP = 0;   // Reset active flag for next zero-crossing
         }
     }
     
@@ -253,6 +252,7 @@ void updateSCRPulses(void) {
         if (elapsed >= PULSE_WIDTH_TICKS) {
             LATD &= ~0x08;  // Clear RD3
             pulseActiveBN = 0;
+            activeBN = 0;   // Reset active flag for next zero-crossing
         }
     }
     
@@ -262,6 +262,7 @@ void updateSCRPulses(void) {
         if (elapsed >= PULSE_WIDTH_TICKS) {
             LATD &= ~0x10;  // Clear RD4
             pulseActiveCP = 0;
+            activeCP = 0;   // Reset active flag for next zero-crossing
         }
     }
     
@@ -271,6 +272,7 @@ void updateSCRPulses(void) {
         if (elapsed >= PULSE_WIDTH_TICKS) {
             LATD &= ~0x20;  // Clear RD5
             pulseActiveCN = 0;
+            activeCN = 0;   // Reset active flag for next zero-crossing
         }
     }
 }
@@ -316,10 +318,12 @@ void init(void) {
     INTCON3bits.INT2IF = 0;  // Clear flag
     INTCON3bits.INT2IE = 1;  // Enable interrupt
     
-    // PORTB Change Interrupt for RB3, RB4, RB5 (B-, C+, C-)
+    // PORTB Change Interrupt for RB4, RB5 only (C+, C-)
+    INTCONbits.RBIF = 0;         // Clear flag first
     portb_old = PORTB;           // Initialize previous state
+    rb3_old = (PORTB & 0x08);    // Initialize RB3 state for polling
+    (void)PORTB;                 // Dummy read to clear mismatch condition
     INTCONbits.RBIE = 1;         // Enable PORTB change interrupt
-    INTCONbits.RBIF = 0;         // Clear flag
 
     // Enable global interrupts
     INTCONbits.GIEH = 1;     // Enable high priority interrupts
@@ -330,6 +334,7 @@ void init(void) {
     activeAP = activeAN = activeBP = activeBN = activeCP = activeCN = 0;
     delayTicks = 0;
     lastTAP = lastTAN = lastTBP = lastTBN = lastTCP = lastTCN = 0;
+    rb3_old = 0;  // Initialize RB3 polling state
     
     // Clear individual pulse variables
     pulseActiveAP = pulseActiveAN = pulseActiveBP = 0;
@@ -340,103 +345,61 @@ void init(void) {
 
 // === MAIN for C18 ===
 void main(void) {
-    unsigned int now, elapsed;
-    int adcVal;
+    unsigned char rb3_current;  // Declare variable at function start for C18 compliance
     
     init();
 
     while (1) {
-        now = readTimer1();
-
         // Update all individual pulse timers (must be called frequently)
         updateSCRPulses();
 
-        // Read ADC for delay (done once per loop)
-        adcVal = readADC();
-        delayTicks = calculateDelayTicks(adcVal);
+        // Poll RB3 (B-) for rising edge detection
+        rb3_current = PORTB & 0x08;
+        if (!rb3_old && rb3_current && !activeBN) {
+            zcBN = 1;  // Rising edge detected on RB3
+        }
+        rb3_old = rb3_current;
 
         // A+ (RD0) - triggered by RB0
         if (zcAP && !activeAP) {
-            lastTAP = now;
+            startSCRPulse(0);  // Fire RD0 (A+) immediately
             activeAP = 1;
             zcAP = 0;
-        }
-        if (activeAP) {
-            elapsed = timerDiff(now, lastTAP);
-            if (elapsed >= delayTicks) {
-                startSCRPulse(0);  // Fire RD0 (A+)
-                activeAP = 0;
-            }
         }
 
         // A- (RD1) - triggered by RB1
         if (zcAN && !activeAN) {
-            lastTAN = now;
+            startSCRPulse(1);  // Fire RD1 (A-) immediately
             activeAN = 1;
             zcAN = 0;
-        }
-        if (activeAN) {
-            elapsed = timerDiff(now, lastTAN);
-            if (elapsed >= delayTicks) {
-                startSCRPulse(1);  // Fire RD1 (A-)
-                activeAN = 0;
-            }
         }
 
         // B+ (RD2) - triggered by RB2
         if (zcBP && !activeBP) {
-            lastTBP = now;
+            startSCRPulse(2);  // Fire RD2 (B+) immediately
             activeBP = 1;
             zcBP = 0;
         }
-        if (activeBP) {
-            elapsed = timerDiff(now, lastTBP);
-            if (elapsed >= delayTicks) {
-                startSCRPulse(2);  // Fire RD2 (B+)
-                activeBP = 0;
-            }
-        }
 
-        // B- (RD3) - triggered by RB3
+        // B- (RD3) - triggered by RB3 (polled)
         if (zcBN && !activeBN) {
-            lastTBN = now;
+            startSCRPulse(3);  // Fire RD3 (B-) immediately
             activeBN = 1;
             zcBN = 0;
-        }
-        if (activeBN) {
-            elapsed = timerDiff(now, lastTBN);
-            if (elapsed >= delayTicks) {
-                startSCRPulse(3);  // Fire RD3 (B-)
-                activeBN = 0;
-            }
         }
 
         // C+ (RD4) - triggered by RB4
         if (zcCP && !activeCP) {
-            lastTCP = now;
+            startSCRPulse(4);  // Fire RD4 (C+) immediately
             activeCP = 1;
             zcCP = 0;
-        }
-        if (activeCP) {
-            elapsed = timerDiff(now, lastTCP);
-            if (elapsed >= delayTicks) {
-                startSCRPulse(4);  // Fire RD4 (C+)
-                activeCP = 0;
-            }
         }
 
         // C- (RD5) - triggered by RB5
         if (zcCN && !activeCN) {
-            lastTCN = now;
+            startSCRPulse(5);  // Fire RD5 (C-) immediately
             activeCN = 1;
             zcCN = 0;
-        }
-        if (activeCN) {
-            elapsed = timerDiff(now, lastTCN);
-            if (elapsed >= delayTicks) {
-                startSCRPulse(5);  // Fire RD5 (C-)
-                activeCN = 0;
-            }
         }
     }
 }
